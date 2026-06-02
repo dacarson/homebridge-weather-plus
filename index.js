@@ -274,10 +274,18 @@ WeatherPlusPlatform.prototype = {
 								});
 
 								this.log.debug("Saving history entry");
+								// Read pressure straight from the report rather than the HomeKit
+								// characteristic: the AirPressure characteristic is UINT16/minStep 1
+								// so it would lose the decimals the Eve graph relies on.
+								// Never store 0 for pressure either: it wrecks the graph scaling
+								// since real pressure only varies a little. Reuse the last known
+								// value until a genuine reading is available.
+								let pressure = (data.AirPressure !== undefined && CustomCharacteristic.AirPressure._unitvalue) ? CustomCharacteristic.AirPressure._unitvalue(data.AirPressure) : 0;
+								if (pressure) accessory.lastHistoryPressure = pressure;
 								accessory.historyService.addEntry({
 									time: new Date().getTime() / 1000,
 									temp: accessory.CurrentConditionsService.getCharacteristic(Characteristic.CurrentTemperature).value,
-									pressure: accessory.AirPressureService ? accessory.AirPressureService.value : (accessory.CurrentConditionsService.testCharacteristic(CustomCharacteristic.AirPressure) ? accessory.CurrentConditionsService.getCharacteristic(CustomCharacteristic.AirPressure).value : 0),
+									pressure: accessory.lastHistoryPressure,
 									humidity: accessory.HumidityService ? accessory.HumidityService.getCharacteristic(Characteristic.CurrentRelativeHumidity).value : accessory.CurrentConditionsService.getCharacteristic(Characteristic.CurrentRelativeHumidity).value,
 									lux: accessory.LightLevelService ? accessory.LightLevelService.getCharacteristic(Characteristic.CurrentAmbientLightLevel).value : (accessory.CurrentConditionsService.testCharacteristic(Characteristic.CurrentAmbientLightLevel) ? accessory.CurrentConditionsService.getCharacteristic(Characteristic.CurrentAmbientLightLevel).value : 0)
 								});
