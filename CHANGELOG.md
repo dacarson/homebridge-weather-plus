@@ -316,4 +316,5 @@
 
 ## 3.5.1
 * Fixed accessory out of compliance error with HomeBridge 2.0
-* Fixed Eve (with grouping) compatibility option
+* Fixed Eve (with grouping) compatibility option from crashing on startup
+* Fixed missing Pressure & Light history in eve/eve2 data
