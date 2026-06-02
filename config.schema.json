@@ -260,6 +260,10 @@
           },
           "thresholdWindSpeed": {
             "type": "integer"
+          },
+          "tempestStation": {
+            "type": "string",
+            "pattern": "^(AR|SK|ST|ar|sk|st)-[0-9]{8}( *, *(AR|SK|ST|ar|sk|st)-[0-9]{8})*$"
           }
         }
       }
@@ -490,6 +494,15 @@
                 {
                   "key": "stations[].fakegatoParameters",
                   "notitle": true
+                },
+                {
+                  "key": "stations[].tempestStation",
+                  "title": "Station Serial Number(s)",
+                  "description": "(optional) Provide the station serial number to only report data on a select weather station. For Air/Sky, enter both (eg. AR-XXXXXXXX,SK-XXXXXXXX)",
+                  "validationMessage": "Enter one serial number, or a comma-separated AR/SK pair. Each must start with AR-, SK- or ST- followed by 8 characters (eg. ST-00012345 or AR-00012345,SK-00012345).",
+                  "condition": {
+                    "functionBody": "return model.stations[arrayIndices[0]].service === 'tempest'"
+                  }
                 }
               ]
             },

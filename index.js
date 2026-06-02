@@ -82,7 +82,7 @@ function WeatherPlusPlatform(_log, _config)
 				break;
 			case "tempest":
 				this.log.info("Adding station with weather service TempestAPI named '" + config.nameNow + "'");
-				this.stations.push(new tempest(config.key, config.locationId, config.conditionDetail, this.log, HomebridgeAPI.user.persistPath()));
+				this.stations.push(new tempest(config.key, config.locationId, config.conditionDetail, config.tempestStation, this.log, HomebridgeAPI.user.persistPath()));
 				this.interval = 1;  // Tempest broadcasts new data every minute, forecasts are limited to once per hour
 				break;
 			default:
@@ -236,6 +236,10 @@ WeatherPlusPlatform.prototype = {
 		}
 		this.log.debug(station.hidden);
 		station.serial = station.service + " - " + (station.locationId || '') + (station.locationGeo || '') + (station.locationCity || '');
+		if (station.tempestStation) 
+		{
+			station.serial += " (" + station.tempestStation + ")";
+		}
 		return true;
 	},
 

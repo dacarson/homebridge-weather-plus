@@ -16,7 +16,7 @@ const converter = require('../util/converter'),
 
 class TempestAPI
 {
-	constructor (apiKey, locationId, conditionDetail, log, cacheDirectory)
+	constructor (apiKey, locationId, conditionDetail, tempestStation, log, cacheDirectory)
 	{
 		this.attribution = 'Weatherflow Tempest';
 		this.reportCharacteristics = [
@@ -74,10 +74,31 @@ class TempestAPI
 		this.log = log;
 		this.apiKey = apiKey;
 		this.locationId = locationId;
+		this.tempestStationLock = [];
+		if (tempestStation && tempestStation.length > 0) {
+			let stations = tempestStation.split(',');
+			stations.forEach((station) => {
+				station = station.trim().toUpperCase();
+				if (this.validateSerialNumber(station)) {
+					this.tempestStationLock.push(station);
+					this.log.debug("Monitoring station: " + station);
+				} else {
+					this.log.warn("Ignoring invalid station serial number: " + station);
+				}
+			});
+		}
 		
-		this.storage = require('node-persist');
+		// Use a dedicated node-persist instance per station so that multiple
+		// Tempest instances don't clobber each other's stored readings. When a
+		// station filter is configured, namespace the cache directory by it so
+		// each instance reads/writes its own isolated store.
+		let storageDir = cacheDirectory;
+		if (this.tempestStationLock.length > 0) {
+			storageDir = require('path').join(cacheDirectory, 'weatherflow-' + this.tempestStationLock.join('-'));
+		}
+		this.storage = require('node-persist').create();
 		// The saved data is only valid for up to 24hrs (TTL)
-		this.storage.initSync({dir:cacheDirectory, forgiveParseErrors: true, ttl: true});
+		this.storage.initSync({dir:storageDir, forgiveParseErrors: true, ttl: true});
 		this.rainAccumulation = [];
 		// Fill the array with zeros so that when we sum them up, it doesn't get NaN
 		for (var i = 0; i < 60; i++) this.rainAccumulation[i] = 0.0;
@@ -166,6 +187,23 @@ class TempestAPI
 	
 		this.server.bind(50222);
 	}
+ 
+	validateSerialNumber(serialNumber) {
+		if (!serialNumber) {
+			this.log.debug(`No WeatherFlow station serial number provided`);
+			return false;
+		}
+		if (!['AR-', 'SK-', 'ST-'].includes(serialNumber.substring(0, 3))) {
+			this.log.debug(`Serial number has wrong prefix ${serialNumber}`);
+			return false;
+		}
+		if (!/^[0-9]{8}$/.test(serialNumber.substring(3))) {
+			this.log.debug(`Serial number suffix must be 8 digits ${serialNumber}`);
+			return false;
+		}
+    
+		return true;
+	}
 
 	load() {
 		this.log("Restoring last readings");
@@ -209,6 +247,18 @@ class TempestAPI
 	update(forecastDays, callback)
 	{
 		this.log.debug("Updating weather from Weatherflow Tempest");
+		
+		// The current weather data could be requested before the plugin
+		// has received initial data from the sensors. Updating with empty
+		// data causes error messages from HomeBridge and odd values in
+		// the logs.
+		// If we still have default values for serial numbers, then return
+		// error, and thus don't populate data yet.
+		if (this.currentReport.SkySerialNumber === "SK-" && this.currentReport.AirSerialNumber === "AR-") {
+			this.log.warn("Weatherflow data incomplete, ignoring update request");
+			callback(true, null);
+			return;
+		}
 
 		let weather = {};
 		weather.forecasts = [];
@@ -316,6 +366,15 @@ class TempestAPI
 	{
 		let that = this;
 		
+		// Filter out messages for this station if there are filters
+		if (this.tempestStationLock.length > 0) {
+			this.log.debug("Applying SN filter: " + this.tempestStationLock.toString());
+			if (!message.serial_number || !this.tempestStationLock.includes(message.serial_number.toUpperCase())) {
+				this.log.debug("Ignoring data for: " + message.serial_number + " " + JSON.stringify(message));
+				return;
+			}
+		}
+    
 		if (message.type == 'device_status') {
 			that.currentReport.ObservationStation = message.serial_number;
 			that.currentReport.ObservationTime = moment.unix(message.timestamp).format('HH:mm:ss');
@@ -433,7 +492,7 @@ class TempestAPI
 				that.currentReport.DewPoint = wformula.temperature.kelvinToCelcius(wformula.temperature.dewPointMagnusFormula(
 					wformula.temperature.celciusToKelvin(that.currentReport.Temperature), 
 					that.currentReport.Humidity));
-				that.currentReport.TemperatureApparent = wformula.temperature.kelvinToCelcius(wformula.temperature.australianAapparentTemperature(
+				that.currentReport.TemperatureApparent = wformula.temperature.kelvinToCelcius(wformula.temperature.australianApparentTemperature(
 					wformula.temperature.celciusToKelvin(that.currentReport.Temperature),
 					that.currentReport.Humidity,
 					that.currentReport.WindSpeed));
