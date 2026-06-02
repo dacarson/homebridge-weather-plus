@@ -449,7 +449,7 @@ class TempestAPI
 				this.multiStationSignature = signature;
 				this.log.warn("Detected multiple WeatherFlow stations on the network (" + active.join(', ') +
 					"). Their data is being mixed together. Set the station serial number in the plugin " +
-					"configuration to choose which station to report.");
+					"configuration (an advanced setting) to choose which station to report.");
 			}
 		} else {
 			this.multiStationSignature = undefined;
