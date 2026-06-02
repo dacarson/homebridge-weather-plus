@@ -179,6 +179,12 @@ class TempestAPI
 		// Keep track of previous message so that
 		// we can remove duplicates
 		this.prevMsg = "";
+
+		// When no serial number is configured, track which stations we hear from
+		// so we can warn the user if more than one station is broadcasting (their
+		// data would otherwise be silently mixed together). Maps serial -> last
+		// seen time so stations that go away (e.g. a swapped device) are forgotten.
+		this.seenStations = {};
 	
 		// Subscribe this instance to the shared UDP listener (see note at top of
 		// file). Every instance receives every datagram and filters by its own
@@ -408,10 +414,54 @@ class TempestAPI
 	}
 	
 
+	// When no station serial number is configured, every broadcast is merged
+	// into a single report. If more than one station is on the network their
+	// data clobbers each other, so detect that and warn the user to configure a
+	// serial number. A valid single station is either one Tempest (ST-) or one
+	// Sky (SK-) paired with one Air (AR-). Stations that stop broadcasting are
+	// expired so swapping a device for a new serial does not trigger a warning.
+	checkForMultipleStations(serialNumber)
+	{
+		// Only relevant when the user hasn't locked to specific serial number(s).
+		if (this.tempestStationLock.length > 0) return;
+		if (!this.validateSerialNumber(serialNumber)) return;
+
+		let now = Date.now();
+		const EXPIRY_MS = 5 * 60 * 1000;
+		this.seenStations[serialNumber.toUpperCase()] = now;
+		Object.keys(this.seenStations).forEach((sn) => {
+			if (now - this.seenStations[sn] > EXPIRY_MS) delete this.seenStations[sn];
+		});
+
+		let active = Object.keys(this.seenStations).sort();
+		let tempest = active.filter((sn) => sn.startsWith('ST-'));
+		let sky = active.filter((sn) => sn.startsWith('SK-'));
+		let air = active.filter((sn) => sn.startsWith('AR-'));
+
+		// Invalid if more than one of any type, or a Tempest mixed with a Sky/Air.
+		let multiple = tempest.length > 1 || sky.length > 1 || air.length > 1 ||
+			(tempest.length > 0 && (sky.length > 0 || air.length > 0));
+
+		let signature = active.join(',');
+		if (multiple) {
+			// Only warn when the set of stations changes to avoid log spam.
+			if (this.multiStationSignature !== signature) {
+				this.multiStationSignature = signature;
+				this.log.warn("Detected multiple WeatherFlow stations on the network (" + active.join(', ') +
+					"). Their data is being mixed together. Set the station serial number in the plugin " +
+					"configuration to choose which station to report.");
+			}
+		} else {
+			this.multiStationSignature = undefined;
+		}
+	}
+
 	// API for UDP data: https://weatherflow.github.io/Tempest/api/udp.html
 	parseMessage(message)
 	{
 		let that = this;
+
+		this.checkForMultipleStations(message.serial_number);
 		
 		// Filter out messages for this station if there are filters
 		if (this.tempestStationLock.length > 0) {
