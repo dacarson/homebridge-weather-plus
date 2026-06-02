@@ -388,6 +388,10 @@ WeatherPlusPlatform.prototype = {
 				{
 					accessory.HumidityService.setCharacteristic(Characteristic.CurrentRelativeHumidity, convertedValue);
 				}
+				else if (name === "LightLevel")
+				{
+					accessory.LightLevelService.setCharacteristic(Characteristic.CurrentAmbientLightLevel, value);
+				}
 				else if (["RainBool", "SnowBool"].includes(name))
 				{
 					accessory[name + "Service"].setCharacteristic(Characteristic.OccupancyDetected, convertedValue);
