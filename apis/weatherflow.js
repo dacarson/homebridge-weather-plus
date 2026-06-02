@@ -248,7 +248,7 @@ class TempestAPI
 					this.currentReport[name] = result;
 					this.log.debug(`Loaded ${name} with ${result}`);
 			}
-		})
+		});
 		
 		// Restore the sensor serial numbers. These aren't HomeKit characteristics
 		// so they live outside reportCharacteristics, but they are used to decide
