@@ -14,6 +14,14 @@ const converter = require('../util/converter'),
 	wformula = require('weather-formulas'),
 	axios = require('axios');
 
+// All Tempest instances listen for the same UDP broadcasts on port 50222.
+// Binding a separate socket per instance makes the OS deliver each datagram to
+// only one of them, so a station locked to a specific serial can silently miss
+// all of its broadcasts. Instead we share a single socket and fan every datagram
+// out to every instance, which then filters by its own serial number.
+let sharedServer = null;
+let sharedHandlers = [];
+
 class TempestAPI
 {
 	constructor (apiKey, locationId, conditionDetail, tempestStation, log, cacheDirectory, name)
@@ -172,14 +180,10 @@ class TempestAPI
 		// we can remove duplicates
 		this.prevMsg = "";
 	
-		// Create UDP listener and start listening
-		this.server = dgram.createSocket({type: 'udp4', reuseAddr: true});
-		this.server.on('error', (err) => {
-			  this.log.error(`server error:\n${err.stack}`);
-			  this.server.close();
-			  });
-	
-		this.server.on('message', (msg, rinfo) => {
+		// Subscribe this instance to the shared UDP listener (see note at top of
+		// file). Every instance receives every datagram and filters by its own
+		// serial number in parseMessage().
+		sharedHandlers.push((msg) => {
 			try {
 				var message = JSON.parse(msg);
 				this.log.debug(`Server got: ${message.type}`);
@@ -195,12 +199,26 @@ class TempestAPI
 				}
 			});
 	
-		this.server.on('listening', () => {
-			  const address = this.server.address();
-			  this.log(`server listening ${address.address}:${address.port}`);
-			  });
+		// Lazily create the single shared socket on the first instance.
+		if (!sharedServer) {
+			sharedServer = dgram.createSocket({type: 'udp4', reuseAddr: true});
+			sharedServer.on('error', (err) => {
+				  this.log.error(`server error:\n${err.stack}`);
+				  sharedServer.close();
+				  sharedServer = null;
+				  });
 	
-		this.server.bind(50222);
+			sharedServer.on('message', (msg, rinfo) => {
+				sharedHandlers.forEach((handler) => handler(msg, rinfo));
+				});
+	
+			sharedServer.on('listening', () => {
+				  const address = sharedServer.address();
+				  this.log(`server listening ${address.address}:${address.port}`);
+				  });
+	
+			sharedServer.bind(50222);
+		}
 	}
  
 	validateSerialNumber(serialNumber) {
@@ -232,6 +250,15 @@ class TempestAPI
 			}
 		})
 		
+		// Restore the sensor serial numbers. These aren't HomeKit characteristics
+		// so they live outside reportCharacteristics, but they are used to decide
+		// whether we have ever seen the station. Restoring them avoids a spurious
+		// "data incomplete" warning on restart when we already have last readings.
+		['SkySerialNumber', 'AirSerialNumber'].forEach((name) => {
+			let result = this.storage.getItemSync(name);
+			if (result) this.currentReport[name] = result;
+		});
+		
 		// Reload last hour of rainfall
 		let lastRainAccumulationMinute = this.storage.getItemSync('rainAccumulationMinute');
 		if (typeof lastRainAccumulationMinute !== 'undefined') {
@@ -251,6 +278,11 @@ class TempestAPI
 			this.log.debug(`Persisting ${name}: ${currentReport[name]}`);
 			this.storage.setItemSync(name, currentReport[name]);
 		})
+		
+		// Persist the sensor serial numbers so a restart is recognised as having
+		// seen the station (see load() for why these live outside reportCharacteristics).
+		this.storage.setItemSync('SkySerialNumber', currentReport.SkySerialNumber);
+		this.storage.setItemSync('AirSerialNumber', currentReport.AirSerialNumber);
 		
 		// Store last hour rain fall
 		let hourTTL = 1000 * 60 * 60; // Rainfall data is only valid for an hour.
