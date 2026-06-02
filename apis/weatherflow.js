@@ -16,7 +16,7 @@ const converter = require('../util/converter'),
 
 class TempestAPI
 {
-	constructor (apiKey, locationId, conditionDetail, tempestStation, log, cacheDirectory)
+	constructor (apiKey, locationId, conditionDetail, tempestStation, log, cacheDirectory, name)
 	{
 		this.attribution = 'Weatherflow Tempest';
 		this.reportCharacteristics = [
@@ -71,7 +71,18 @@ class TempestAPI
 			}
 	
 		this.conditionDetail = conditionDetail;
-		this.log = log;
+		// Prefix every log line with the station name so that multiple Tempest
+		// instances (e.g. "Now" and "Backup") can be told apart in the log.
+		if (name && name.length > 0) {
+			let prefix = "[" + name + "]";
+			let wrap = (fn) => (...args) => fn(prefix, ...args);
+			this.log = wrap(log);
+			['debug', 'info', 'warn', 'error'].forEach((level) => {
+				if (typeof log[level] === 'function') this.log[level] = wrap(log[level].bind(log));
+			});
+		} else {
+			this.log = log;
+		}
 		this.apiKey = apiKey;
 		this.locationId = locationId;
 		this.tempestStationLock = [];
@@ -86,6 +97,9 @@ class TempestAPI
 					this.log.warn("Ignoring invalid station serial number: " + station);
 				}
 			});
+			if (this.tempestStationLock.length > 0) {
+				this.log("Only reporting data for station serial number(s): " + this.tempestStationLock.join(', '));
+			}
 		}
 		
 		// Give each station its own node-persist instance, located OUTSIDE the
