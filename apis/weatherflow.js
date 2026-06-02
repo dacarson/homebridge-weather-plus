@@ -88,15 +88,15 @@ class TempestAPI
 			});
 		}
 		
-		// Use a dedicated node-persist instance per station, each in its own
-		// sub-directory, so that multiple Tempest instances don't clobber each
-		// other's stored readings. Every instance (including the unfiltered
-		// default) must use a sub-directory rather than the shared persist dir:
-		// node-persist reads every entry of its dir on init, so a sibling
-		// instance scanning the bare persist dir would hit another instance's
-		// sub-directory and throw EISDIR.
+		// Give each station its own node-persist instance, located OUTSIDE the
+		// shared Homebridge persist directory, so multiple Tempest instances
+		// don't clobber each other's stored readings. HAP-NodeJS uses
+		// node-persist on the shared persist dir and reads every entry of it on
+		// init, so a sub-directory placed inside it would throw EISDIR and break
+		// all of Homebridge. Storing under a sibling "weatherflow-plus" folder
+		// keeps our per-station sub-directories clear of that scan.
 		let namespace = this.tempestStationLock.length > 0 ? this.tempestStationLock.join('-') : 'default';
-		let storageDir = require('path').join(cacheDirectory, 'weatherflow-' + namespace);
+		let storageDir = require('path').join(cacheDirectory, '..', 'weatherflow-plus', namespace);
 		this.storage = require('node-persist').create();
 		// The saved data is only valid for up to 24hrs (TTL)
 		this.storage.initSync({dir:storageDir, forgiveParseErrors: true, ttl: true});
