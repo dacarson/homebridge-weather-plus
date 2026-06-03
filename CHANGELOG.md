@@ -313,8 +313,3 @@
 * Fixed hiding Air Pressure, Dew Point and Wind Speed by config has no effect
 * Added solar radiation to apple home compatibility mode
 * Added sunrise and sunset to apple home compatibility mode
-
-## 3.5.1
-* Fixed accessory out of compliance error with HomeBridge 2.0
-* Fixed Eve (with grouping) compatibility option from crashing on startup
-* Fixed missing Pressure & Light history in eve/eve2 data
