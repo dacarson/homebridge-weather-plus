@@ -178,10 +178,56 @@ function computeEveTrend(pressureDelta, windSpeedMs) {
 	return base | windBit;
 }
 
+// Returns cosine of solar elevation angle for lat/lon at the given UTC date.
+// Positive = sun is above the horizon; 0 = on horizon; negative = below.
+// Uses a simplified solar position model (ignores equation of time, ±16 min max error).
+function solarElevationCos(lat, lon, date) {
+	const dayOfYear = Math.floor((date - new Date(date.getFullYear(), 0, 0)) / 86400000);
+	const decl = 23.45 * Math.PI / 180 * Math.sin(2 * Math.PI / 365 * (dayOfYear - 81));
+	const solarHours = date.getUTCHours() + date.getUTCMinutes() / 60 + lon / 15;
+	const hourAngle = (solarHours - 12) * Math.PI / 12;
+	const latRad = lat * Math.PI / 180;
+	return Math.sin(latRad) * Math.sin(decl) + Math.cos(latRad) * Math.cos(decl) * Math.cos(hourAngle);
+}
+
+// Compute Eve condition category from Tempest precipitation type and solar radiation.
+//
+// precipType: Tempest precip code — 0=none, 1=rain, 2=hail, 3=rain+hail
+// solarRadiation: measured W/m²
+// lat/lon: station coordinates (from forecast API); null → precipitation-only fallback
+// detail: truthy → detailed Eve category (0–9); falsy → simple (0–3)
+//
+// Clear-sky model: GHI ≈ 1020 × cos(zenith). The ratio of actual/theoretical
+// gives a cloud-cover proxy. Below 50 W/m² theoretical the sun is near/below
+// the horizon — treat as night and return 0 (clear/unknown).
+function computeConditionCategory(precipType, solarRadiation, lat, lon, detail) {
+	if (precipType === 1) return detail ? 6 : 2; // Rain
+	if (precipType === 2) return detail ? 7 : 2; // Hail
+	if (precipType === 3) return detail ? 7 : 2; // Rain + Hail
+
+	if (lat == null || lon == null) return 0; // No location → can't assess cloud cover
+
+	const theoretical = Math.max(0, 1020 * solarElevationCos(lat, lon, new Date()));
+	if (theoretical < 50) return 0; // Night / sun near horizon
+
+	const ratio = solarRadiation / theoretical;
+
+	if (detail) {
+		if (ratio > 0.85) return 0; // Clear
+		if (ratio > 0.55) return 1; // Few clouds
+		if (ratio > 0.25) return 2; // Broken clouds
+		return 3;                   // Overcast
+	} else {
+		if (ratio > 0.85) return 0; // Clear
+		return 1;                   // Overcast
+	}
+}
+
 module.exports = {
 	getWindDirection,
 	getRainAccumulated,
 	getWetBulbTemperature,
 	trackPressureDelta,
-	computeEveTrend
+	computeEveTrend,
+	computeConditionCategory
 };

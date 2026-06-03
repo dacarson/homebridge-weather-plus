@@ -24,7 +24,7 @@ let sharedHandlers = [];
 
 class TempestAPI
 {
-	constructor (apiKey, locationId, conditionDetail, tempestStation, log, cacheDirectory, name)
+	constructor (apiKey, locationId, conditionDetail, tempestStation, log, cacheDirectory, name, locationGeo)
 	{
 		this.attribution = 'Weatherflow Tempest';
 		this.reportCharacteristics = [
@@ -94,6 +94,8 @@ class TempestAPI
 		}
 		this.apiKey = apiKey;
 		this.locationId = locationId;
+		this.latitude = (locationGeo && locationGeo.length === 2) ? locationGeo[0] : null;
+		this.longitude = (locationGeo && locationGeo.length === 2) ? locationGeo[1] : null;
 		this.tempestStationLock = [];
 		if (tempestStation && tempestStation.length > 0) {
 			let stations = tempestStation.split(',');
@@ -326,6 +328,9 @@ class TempestAPI
 								 {
 				if (!error) {
 					try {
+						this.log.debug("Forecast API top-level keys: " + Object.keys(result).join(', '));
+						if (result.latitude !== undefined) this.latitude = result.latitude;
+						if (result.longitude !== undefined) this.longitude = result.longitude;
 						weather.forecasts = this.parseForecasts(result["current_conditions"]["time"], result["forecast"]["daily"], result["timezone"]);
 					} catch (e) {
 						this.log.error("Error parsing weather Forecast");
@@ -351,30 +356,6 @@ class TempestAPI
 			let that = this;
 			weather.report = that.currentReport;
 			callback(null, weather);
-		}
-	}
-
-	// Map Tempest precipitation values to Eve Condition Categories
-	getConditionCategory(precipitationType, detail = false)
-	{
-	// Tempest: 0 = none, 1 = rain, 2 = hail, 3 = rain + hail (experimental)
-	
-	// Eve (simple): 0 = clear; 3 = snow; 2 = rain; 1 = overcast
-	// Eve (detailed): 0 = clear; 1 = Few clouds;2 = Broken clouds;3 =  Overcast;
-	//   4 = Fog; 5 = Drizzle; 6 = Rain; 7 = Hail; 8 = Snow; 9 = Severe weather
-
-		if (precipitationType == 1) {
-			// Rain
-			return detail ? 6 : 2;
-		} else if (precipitationType == 2) {
-			// Hail
-			return detail ? 7 : 2;
-		} else if (precipitationType == 3){
-			// Rain + Hail (return as hail)
-			return detail ? 7 : 2;
-		} else {
-			// 0 = Clear
-			return 0;
 		}
 	}
 
@@ -565,7 +546,7 @@ class TempestAPI
 		if (message.type == 'evt_precip') {
 			that.currentReport.ObservationStation = message.serial_number;
 			that.currentReport.ObservationTime = moment.unix(message.evt[0]).format('HH:mm:ss');
-			that.currentReport.ConditionCategory = this.getConditionCategory(1, this.conditionDetail); // It has started to rain
+			that.currentReport.ConditionCategory = converter.computeConditionCategory(1, 0, this.latitude, this.longitude, this.conditionDetail); // It has started to rain
 			that.currentReport.RainBool = true;
 		}
 		
@@ -661,7 +642,7 @@ class TempestAPI
 				that.currentReport.RainDay = parseFloat(message.obs[0][3]);
 				that.currentReport.TemperatureMin = that.currentReport.Temperature;
 			}
-			that.currentReport.ConditionCategory = this.getConditionCategory(message.obs[0][12], this.conditionDetail);
+			that.currentReport.ConditionCategory = converter.computeConditionCategory(message.obs[0][12], that.currentReport.SolarRadiation, this.latitude, this.longitude, this.conditionDetail);
 		}
 
        if (message.type == 'obs_st') {
@@ -716,7 +697,7 @@ class TempestAPI
                 that.currentReport.RainDay = parseFloat(message.obs[0][12]);
                 that.currentReport.TemperatureMin = that.currentReport.Temperature;
             }
-            that.currentReport.ConditionCategory = this.getConditionCategory(message.obs[0][13], this.conditionDetail);
+            that.currentReport.ConditionCategory = converter.computeConditionCategory(message.obs[0][13], that.currentReport.SolarRadiation, this.latitude, this.longitude, this.conditionDetail);
             that.currentReport.LightningAvgDistance = message.obs[0][14];
             that.currentReport.LightningStrikes = message.obs[0][15];
             that.currentReport.SkySensorBatteryLevel = this.getTempestBatteryPercent(message.obs[0][16]);
