@@ -55,7 +55,8 @@ class TempestAPI
 			// @see https://weatherflow.github.io/Tempest/api/derived-metric-formulas.html
 			'DewPoint', // Calculated from Humidity & Temperature
 			'TemperatureApparent', // Calculated from Humidity, Temperature & Windspeed
-			'TemperatureWetBulb' // Calculated from Humidity & Temperature
+			'TemperatureWetBulb', // Calculated from Humidity & Temperature
+			'WeatherTrend' // Eve-only: computed from pressure delta + wind speed (m/s native)
 		];
 		
 		this.forecastCharacteristics = [
@@ -159,6 +160,8 @@ class TempestAPI
 		this.currentReport.LightLevel = 0;
 		this.currentReport.TemperatureWetBulb = 0;
 		this.currentReport.StatusFault = 0;
+		this.currentReport.WeatherTrend = 0;
+		this.pressureHistory = [];
 
 		// Non-exposed Weather report characteristics
 		// Sky or Tempest station (unlikely to have both)
@@ -579,6 +582,8 @@ class TempestAPI
 			that.currentReport.AirFirmware = message.firmware_revision;
 			that.currentReport.ObservationTime = moment.unix(message.obs[0][0]).format('HH:mm:ss');
 			that.currentReport.AirPressure = message.obs[0][1];
+			const airPressureDelta = converter.trackPressureDelta(that.pressureHistory, that.currentReport.AirPressure);
+			that.currentReport.WeatherTrend = converter.computeEveTrend(airPressureDelta, that.currentReport.WindSpeed);
 			that.currentReport.Temperature = message.obs[0][2];
 			that.currentReport.Humidity = message.obs[0][3];
 			
@@ -674,6 +679,8 @@ class TempestAPI
             //that.currentReport.WindDirection = converter.getWindDirection(message.obs[0][4]);
             
             that.currentReport.AirPressure = message.obs[0][6];
+            const stPressureDelta = converter.trackPressureDelta(that.pressureHistory, that.currentReport.AirPressure);
+            that.currentReport.WeatherTrend = converter.computeEveTrend(stPressureDelta, that.currentReport.WindSpeed);
             that.currentReport.Temperature = message.obs[0][7];
             that.currentReport.Humidity = message.obs[0][8];
 	

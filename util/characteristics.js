@@ -29,7 +29,8 @@ const inherits = require('util').inherits,
 		WindDirection: '46f1284c-1912-421b-82f5-eb75008b167e',
 		WindSpeed: '49C8AE5A-A3A5-41AB-BF1F-12D5654F9F41',
 		WindSpeedMax: '6b8861e5-d6f3-425c-83b6-069945ffd1f1',
-		
+		WeatherTrend: 'E863F136-079E-48FF-8F27-9C2605A29F52',
+
 		// Custom UUIDs
 		LightningStrikes: '848c304a-97fe-41df-b284-ec2e2a6f5104',
 		LightningAvgDistance: '903043ee-2e82-4272-901e-871d775a4747',
@@ -515,6 +516,21 @@ module.exports = function (Characteristic, HomebridgeAPI, units)
 		}
 	};
 	CustomCharacteristic.TemperatureWetBulb = CustomCharacteristicTemperatureWetBulb;
+
+	class CustomCharacteristicWeatherTrend extends Characteristic {
+		constructor() {
+			super('Weather Trend', CustomUUID.WeatherTrend);
+			this.setProps({
+				format: HomebridgeAPI.hap.Formats.UINT8,
+				maxValue: 15,
+				minValue: 0,
+				minStep: 1,
+				perms: [HomebridgeAPI.hap.Perms.PAIRED_READ, HomebridgeAPI.hap.Perms.NOTIFY]
+			});
+			this.value = this.getDefaultValue();
+		}
+	};
+	CustomCharacteristic.WeatherTrend = CustomCharacteristicWeatherTrend;
 
 	return CustomCharacteristic;
 };
