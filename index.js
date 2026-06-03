@@ -274,18 +274,19 @@ WeatherPlusPlatform.prototype = {
 								});
 
 								this.log.debug("Saving history entry");
-								// Read pressure straight from the report rather than the HomeKit
-								// characteristic: the AirPressure characteristic is UINT16/minStep 1
-								// so it would lose the decimals the Eve graph relies on.
-								// Never store 0 for pressure either: it wrecks the graph scaling
-								// since real pressure only varies a little. Reuse the last known
-								// value until a genuine reading is available.
-								let pressure = (data.AirPressure !== undefined && CustomCharacteristic.AirPressure._unitvalue) ? CustomCharacteristic.AirPressure._unitvalue(data.AirPressure) : 0;
+								// Read pressure from the raw report value rather than the HomeKit
+								// characteristic: AirPressure is UINT16/minStep 1 so it loses the
+								// decimals the Eve graph relies on. Store raw hPa (no unit conversion)
+								// so the value is correct regardless of the user's unit setting.
+								// Never store 0 — it wrecks graph scaling since real pressure only
+								// varies a little — so reuse the last known value until a real
+								// reading arrives.
+								let pressure = (data.AirPressure !== undefined) ? data.AirPressure : 0;
 								if (pressure) accessory.lastHistoryPressure = pressure;
 								accessory.historyService.addEntry({
 									time: new Date().getTime() / 1000,
 									temp: accessory.CurrentConditionsService.getCharacteristic(Characteristic.CurrentTemperature).value,
-									pressure: accessory.lastHistoryPressure,
+									pressure: accessory.lastHistoryPressure || 0,
 									humidity: accessory.HumidityService ? accessory.HumidityService.getCharacteristic(Characteristic.CurrentRelativeHumidity).value : accessory.CurrentConditionsService.getCharacteristic(Characteristic.CurrentRelativeHumidity).value,
 									lux: accessory.LightLevelService ? accessory.LightLevelService.getCharacteristic(Characteristic.CurrentAmbientLightLevel).value : (accessory.CurrentConditionsService.testCharacteristic(Characteristic.CurrentAmbientLightLevel) ? accessory.CurrentConditionsService.getCharacteristic(Characteristic.CurrentAmbientLightLevel).value : 0)
 								});
