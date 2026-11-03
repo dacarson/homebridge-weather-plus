@@ -115,11 +115,22 @@
     {
       "name": "7onnie",
       "url": "https://github.com/7onnie"
+    },
+    {
+      "name": "Julian Missig",
+      "url": "https://github.com/jmissig"
+    },
+    {
+      "name": "jmnovak50",
+      "url": "https://github.com/jmnovak50"
     }
   ],
   "repository": {
     "type": "git",
     "url": "https://github.com/naofireblade/homebridge-weather-plus.git"
+  },
+  "scripts": {
+    "test": "node test/weatherflow-udp-recovery.test.js"
   },
   "dependencies": {
     "fakegato-history": "^0.6.7",
