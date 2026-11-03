@@ -507,6 +507,12 @@ WeatherPlusPlatform.prototype = {
 					temperatureService.setCharacteristic(Characteristic.StatusFault, Characteristic.StatusFault.NO_FAULT);
 				}
 			}
+			// Observation Time has no NOTIFY permission, so don't push updates for it.
+			// Just keep the newest value; the accessory's onGet handler returns it.
+			else if (name === "ObservationTime")
+			{
+				accessory.lastObservationTime = convertedValue;
+			}
 			// Set everything else as a custom characteristic on the main service.
 			// Matches the accessory-construction guard in
 			// accessories/currentConditions.js + forecast.js — only the

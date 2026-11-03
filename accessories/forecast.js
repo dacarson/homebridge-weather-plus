@@ -104,6 +104,12 @@ function ForecastWeatherAccessory(platform, stationIndex, day)
 			else if (this.config.compatibility === "eve" || this.config.compatibility === "eve2")
 			{
 				this.ForecastService.addCharacteristic(CustomCharacteristic[name]);
+				// Observation Time is read-only (no NOTIFY); serve the newest value on demand.
+				if (name === "ObservationTime")
+				{
+					this.ForecastService.getCharacteristic(CustomCharacteristic.ObservationTime)
+						.onGet(() => this.lastObservationTime || "");
+				}
 			}
 		}
 	});

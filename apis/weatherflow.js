@@ -9,6 +9,7 @@
  */
 
 const converter = require('../util/converter'),
+	chargingState = require('../util/chargingState'),
 	moment = require('moment-timezone'),
 	dgram = require("dgram"),
 	wformula = require('weather-formulas'),
@@ -164,6 +165,14 @@ class TempestAPI
 		this.currentReport.StatusFault = 0;
 		this.currentReport.WeatherTrend = 0;
 		this.pressureHistory = [];
+
+		// Charging State is inferred from the battery voltage trend. Track each
+		// sensor separately and only report a change once it has held for a
+		// while (see util/chargingState.js).
+		this.airVoltageTrend = new chargingState.BatteryVoltageTrend();
+		this.skyVoltageTrend = new chargingState.BatteryVoltageTrend(); // Sky or Tempest
+		this.chargingStateHold = new chargingState.ChargingStateHold(
+			chargingState.CHARGING_STATE_HOLD_MS, (msg) => this.log.debug(msg));
 
 		// Non-exposed Weather report characteristics
 		// Sky or Tempest station (unlikely to have both)
@@ -398,6 +407,17 @@ class TempestAPI
 	}
 	
 
+	// Apply the hold to a sensor's charging trend and update the report.
+	// 'charging' is undefined until the voltage trend is known, in which case
+	// the current report value is left alone.
+	reportChargingState(charging, epochSeconds)
+	{
+		const state = this.chargingStateHold.update(charging, epochSeconds * 1000);
+		if (state !== undefined) {
+			this.currentReport.BatteryIsCharging = state;
+		}
+	}
+
 	// When no station serial number is configured, every broadcast is merged
 	// into a single report. If more than one station is on the network their
 	// data clobbers each other, so detect that and warn the user to configure a
@@ -588,16 +608,12 @@ class TempestAPI
 			that.currentReport.LightningAvgDistance = message.obs[0][5];
 			
 			// Report battery status.
-			var previousLevel = that.currentReport.AirSensorBatteryLevel;
+			var airCharging = this.airVoltageTrend.update(message.obs[0][6]);
 			that.currentReport.AirSensorBatteryLevel = this.getBatteryPercent(message.obs[0][6]);
 			// If the AIR sensor has the lowest battery level, then report it as the Station battery level
 			if (that.currentReport.AirSensorBatteryLevel < that.currentReport.SkySensorBatteryLevel) {
 				that.currentReport.BatteryLevel = that.currentReport.AirSensorBatteryLevel;
-				// It could have a solar panel on it, so check to see if it is going up (charging)
-				that.currentReport.BatteryIsCharging = false;
-				if (that.currentReport.BatteryLevel > previousLevel) {
-					that.currentReport.BatteryIsCharging = true;
-				}
+				this.reportChargingState(airCharging, message.obs[0][0]);
 			}
 		}
 
@@ -620,16 +636,12 @@ class TempestAPI
 			that.currentReport.WindSpeedMax = message.obs[0][6];
 			
 			// Report battery status.
-			var previousLevel = that.currentReport.SkySensorBatteryLevel;
+			var skyCharging = this.skyVoltageTrend.update(message.obs[0][8]);
 			that.currentReport.SkySensorBatteryLevel = this.getBatteryPercent(message.obs[0][8]);
 			// If the SKY sensor has the lowest battery level, then report it as the Station battery level
 			if (that.currentReport.SkySensorBatteryLevel < that.currentReport.AirSensorBatteryLevel) {
 				that.currentReport.BatteryLevel = that.currentReport.SkySensorBatteryLevel;
-				// It could have a solar panel on it, so check to see if it is going up (charging)
-				that.currentReport.BatteryIsCharging = false;
-				if (that.currentReport.BatteryLevel > previousLevel) {
-					that.currentReport.BatteryIsCharging = true;
-				}
+				this.reportChargingState(skyCharging, message.obs[0][0]);
 			}
 			
 			that.currentReport.SolarRadiation = message.obs[0][10];
@@ -701,12 +713,8 @@ class TempestAPI
             that.currentReport.LightningAvgDistance = message.obs[0][14];
             that.currentReport.LightningStrikes = message.obs[0][15];
             that.currentReport.SkySensorBatteryLevel = this.getTempestBatteryPercent(message.obs[0][16]);
-            var previousLevel = that.currentReport.BatteryLevel;
-			that.currentReport.BatteryIsCharging = false;
 			that.currentReport.BatteryLevel = that.currentReport.SkySensorBatteryLevel;
-			if (that.currentReport.BatteryLevel > previousLevel) {
-				that.currentReport.BatteryIsCharging = true;
-			}
+			this.reportChargingState(this.skyVoltageTrend.update(message.obs[0][16]), message.obs[0][0]);
             
         }
 	}

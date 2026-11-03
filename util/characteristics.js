@@ -257,9 +257,12 @@ module.exports = function (Characteristic, HomebridgeAPI, units)
 	class CustomCharacteristicObservationTime extends Characteristic {
 		constructor() {
 			super('Observation Time', CustomUUID.ObservationTime);
+			// No NOTIFY: the value changes on every update and nothing in Apple Home
+			// uses it, so pushing events for it is wasted traffic. The accessory
+			// serves the newest value from an onGet handler instead.
 			this.setProps({
 				format: HomebridgeAPI.hap.Formats.STRING,
-				perms: [HomebridgeAPI.hap.Perms.PAIRED_READ, HomebridgeAPI.hap.Perms.NOTIFY]
+				perms: [HomebridgeAPI.hap.Perms.PAIRED_READ]
 			});
 			this.value = this.getDefaultValue();
 		}

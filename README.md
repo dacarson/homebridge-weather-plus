@@ -86,12 +86,13 @@ I recommend using the Eve app to see all the values. However, if you don't want 
 - Wind Speed Lull
 - Lightning Avg Distance
 - Lightning Strikes
-- *Observation Time*
+- *Observation Time* <sup>[8](#a8)</sup>
 - *Observation Station*
 - *Day of the forecast*
 
 > <b name="a3">3</b> Simple: clear (0), overcast (1), rain (2), snow (3)  
-> <b name="a4">4</b> Detailed: clear (0), few clouds (1), broken clouds (2), overcast (3), fog (4), drizzle (5), rain (6), hail (7), snow (8), severe weather (9)
+> <b name="a4">4</b> Detailed: clear (0), few clouds (1), broken clouds (2), overcast (3), fog (4), drizzle (5), rain (6), hail (7), snow (8), severe weather (9)  
+> <b name="a8">8</b> Observation Time is read-only and does not send change notifications, because it changes on every update and Apple Home does not use it. Apps such as Eve read the newest value when they display it.
 
 ## Configuration
 
@@ -191,6 +192,9 @@ The [Tempest Weatherflow](https://weatherflow.com/tempest-home-weather-system/) 
     }
 ]
 ```
+
+**Battery Charging State**  
+WeatherFlow stations don't report whether the battery is charging, so the plugin works it out from the battery voltage trend. Voltage changes of 10 mV or less are treated as noise, and a new Charging State is only reported once it has held for 15 minutes. The first known state after a restart is reported straight away.
 
 ## Advanced Configuration
 
