@@ -44,7 +44,7 @@
     "weatherflow weather station"
   ],
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/chargingState.test.js && node test/weatherflow-udp-recovery.test.js"
   },
   "engines": {
     "node": ">=10.0.0 || ^20.15.1",
@@ -128,9 +128,6 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/naofireblade/homebridge-weather-plus.git"
-  },
-  "scripts": {
-    "test": "node test/weatherflow-udp-recovery.test.js"
   },
   "dependencies": {
     "fakegato-history": "^0.6.7",
