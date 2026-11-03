@@ -1,7 +1,7 @@
 {
   "name": "homebridge-weather-plus",
   "displayName": "Weather Plus",
-  "version": "3.5.0-beta.1",
+  "version": "3.5.0-beta.2",
   "description": "A comprehensive weather plugin for homekit with current observations, forecasts and history.",
   "license": "MIT",
   "keywords": [
@@ -112,18 +112,29 @@
     {
       "name": "7onnie",
       "url": "https://github.com/7onnie"
+    },
+    {
+      "name": "Julian Missig",
+      "url": "https://github.com/jmissig"
+    },
+    {
+      "name": "jmnovak50",
+      "url": "https://github.com/jmnovak50"
     }
   ],
   "repository": {
     "type": "git",
     "url": "https://github.com/naofireblade/homebridge-weather-plus.git"
   },
+  "scripts": {
+    "test": "node test/weatherflow-udp-recovery.test.js"
+  },
   "dependencies": {
     "fakegato-history": "^0.6.7",
     "geo-tz": "^6.0.0",
     "moment-timezone": "^0.5.28",
     "axios": "^1.7.9",
-    "weather-formulas": "^1",
+    "weather-formulas": "^1.0.9",
     "node-persist": "^2.1.0",
     "debug": "^4.4.0"
   },

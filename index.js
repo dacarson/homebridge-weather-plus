@@ -17,6 +17,15 @@ let Service,
 	HomebridgeAPI,
 	FakeGatoHistoryService;
 
+function registerStationShutdown(api, stations)
+{
+	api.on("shutdown", () => {
+		stations.forEach((station) => {
+			if (typeof station.dispose === "function") station.dispose();
+		});
+	});
+}
+
 module.exports = function (homebridge)
 {
 	// Homekit services and characteristics
@@ -74,7 +83,7 @@ function WeatherPlusPlatform(_log, _config)
 				break;
 			case "openweathermap":
 				this.log.info("Adding station with weather service OpenWeatherMap named '" + config.nameNow + "'");
-				this.stations.push(new openweathermap(config.key, config.language, config.locationId, config.locationGeo, config.locationCity, config.conditionDetail, this.log));
+				this.stations.push(new openweathermap(config.key, config.language, config.locationId, config.locationGeo, config.locationCity, config.conditionDetail, this.log, config.openWeatherMapApiVersion));
 				break;
 			case "weewx":
 				this.log.info("Adding station with weather service Weewx named '" + config.nameNow + "'");
@@ -111,6 +120,8 @@ function WeatherPlusPlatform(_log, _config)
 			}
 		});
 	});
+
+	registerStationShutdown(HomebridgeAPI, this.stations);
 
 	// Start update interval
 	this.updateWeather();
@@ -172,6 +183,15 @@ WeatherPlusPlatform.prototype = {
 
 		// Condition detail level — stored as boolean so downstream detail ? x : y checks work correctly
 		station.conditionDetail = (stationConfig.conditionCategory === 'detailed');
+
+		// OpenWeatherMap API version selection. "auto" (default) probes 3.0
+		// once at start and falls back to 2.5 on a 401, which is the
+		// historic behaviour. "2.5" skips the probe entirely (use this if
+		// your API key does not have OneCall 3.0 — silences the recurring
+		// "Could not retreive weather report with API 3.0" info line on
+		// every plugin start). "3.0" pins the modern endpoint without
+		// fallback.
+		station.apiVersion = ["auto", "2.5", "3.0"].includes(stationConfig.openWeatherMapApiVersion) ? stationConfig.openWeatherMapApiVersion : "auto";
 
 		// Separate humidity accessory
 		station.extraHumidity = stationConfig.extraHumidity || false;
@@ -283,7 +303,7 @@ WeatherPlusPlatform.prototype = {
 									time: new Date().getTime() / 1000,
 									temp: accessory.CurrentConditionsService.getCharacteristic(Characteristic.CurrentTemperature).value,
 									pressure: accessory.lastHistoryPressure || 0,
-									humidity: accessory.HumidityService ? accessory.HumidityService.getCharacteristic(Characteristic.CurrentRelativeHumidity).value : accessory.CurrentConditionsService.getCharacteristic(Characteristic.CurrentRelativeHumidity).value,
+									humidity: accessory.HumidityService ? accessory.HumidityService.getCharacteristic(Characteristic.CurrentRelativeHumidity).value : (accessory.CurrentConditionsService.testCharacteristic(Characteristic.CurrentRelativeHumidity) ? accessory.CurrentConditionsService.getCharacteristic(Characteristic.CurrentRelativeHumidity).value : 0),
 									lux: accessory.LightLevelService ? accessory.LightLevelService.getCharacteristic(Characteristic.CurrentAmbientLightLevel).value : (accessory.CurrentConditionsService.testCharacteristic(Characteristic.CurrentAmbientLightLevel) ? accessory.CurrentConditionsService.getCharacteristic(Characteristic.CurrentAmbientLightLevel).value : 0)
 								});
 							} catch (error2)
@@ -426,12 +446,12 @@ WeatherPlusPlatform.prototype = {
 				}
 				else if (name === "SunriseTime")
 				{
-					accessory.SunriseTimeService.setCharacteristic(Characteristic.ConfiguredName, "Sunriseː " + convertedValue);
+					accessory.SunriseTimeService.setCharacteristic(Characteristic.ConfiguredName, "Sunrise");
 					accessory.SunriseTimeService.setCharacteristic(Characteristic.Name, "Sunriseː " + convertedValue);
 				}
 				else if (name === "SunsetTime")
 				{
-					accessory.SunsetTimeService.setCharacteristic(Characteristic.ConfiguredName, "Sunsetː " + convertedValue);
+					accessory.SunsetTimeService.setCharacteristic(Characteristic.ConfiguredName, "Sunset");
 					accessory.SunsetTimeService.setCharacteristic(Characteristic.Name, "Sunsetː " + convertedValue);
 				}
 				else if (name === "WindDirection")
@@ -508,9 +528,21 @@ WeatherPlusPlatform.prototype = {
 			// via getCharacteristic() and trigger the strict-HAP rejection.
 			else if (config.compatibility === "eve" || config.compatibility === "eve2")
 			{
-				temperatureService.setCharacteristic(CustomCharacteristic[name], convertedValue);
+				// Eve-only conversion. Temperature-bearing Custom Characteristics
+				// (DewPoint, TemperatureMin, TemperatureApparent, TemperatureWetBulb)
+				// carry a fahrenheit unit label under imperial units, so the value
+				// shown here must be fahrenheit to match that label. We convert via
+				// the per-characteristic _evevalue hook ONLY at this sink, never via
+				// the global _unitvalue at convertedValue — that single value is also
+				// written into HAP's built-in CurrentTemperature in home/both mode,
+				// which is always Celsius and localized by Apple Home. See #129.
+				const eveValue = (name in CustomCharacteristic && CustomCharacteristic[name]._evevalue)
+					? CustomCharacteristic[name]._evevalue(convertedValue)
+					: convertedValue;
+				temperatureService.setCharacteristic(CustomCharacteristic[name], eveValue);
 			}
 		}
 	}
 };
 
+module.exports.registerStationShutdown = registerStationShutdown;
