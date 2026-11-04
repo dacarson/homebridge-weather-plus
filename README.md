@@ -86,12 +86,15 @@ I recommend using the Eve app to see all the values. However, if you don't want 
 - Wind Speed Lull
 - Lightning Avg Distance
 - Lightning Strikes
-- *Observation Time*
+- Weather Trend <sup>[9](#a9)</sup>
+- *Observation Time* <sup>[8](#a8)</sup>
 - *Observation Station*
 - *Day of the forecast*
 
 > <b name="a3">3</b> Simple: clear (0), overcast (1), rain (2), snow (3)  
-> <b name="a4">4</b> Detailed: clear (0), few clouds (1), broken clouds (2), overcast (3), fog (4), drizzle (5), rain (6), hail (7), snow (8), severe weather (9)
+> <b name="a4">4</b> Detailed: clear (0), few clouds (1), broken clouds (2), overcast (3), fog (4), drizzle (5), rain (6), hail (7), snow (8), severe weather (9)  
+> <b name="a8">8</b> Observation Time is read-only and does not send change notifications, because it changes on every update and Apple Home does not use it. Apps such as Eve read the newest value when they display it.  
+> <b name="a9">9</b> Tempest and WeeWX only, shown in the Eve app (compatibility `"eve"` or `"eve2"`). It is a rough forecast worked out from how much the air pressure has changed over the last 3 hours. Tempest also flags wind when the wind speed is 10 m/s or more. WeeWX uses pressure only, because its wind units depend on your WeeWX setup.
 
 ## Configuration
 
@@ -181,6 +184,12 @@ The [Tempest Weatherflow](https://weatherflow.com/tempest-home-weather-system/) 
 **stationId**  
 (Optional - only needed for Forecasts) Your personal StationID. Viewing your [station settings](https://tempestwx.com/settings/station/), it is the number on the end of the URL.
 
+**locationGeo**  
+(Optional) Latitude and longitude of the station, e.g. `[52.52, 13.40]`. It is used for the condition category (see below). If you have set up forecasts, the station's location comes from the forecast data instead.
+
+**tempestStation**  
+(Optional) Serial number of the station to report, e.g. `"ST-00012345"`. For an Air and Sky pair, give both, separated by a comma: `"AR-00012345,SK-00012345"`. Set this when more than one WeatherFlow station is on your network, so that each accessory only shows its own station. See [Multiple Tempest stations](#multiple-tempest-stations).
+
 ```json
 "platforms": [
     {
@@ -191,6 +200,12 @@ The [Tempest Weatherflow](https://weatherflow.com/tempest-home-weather-system/) 
     }
 ]
 ```
+
+**Condition Category**  
+Rain and hail come straight from the station. Otherwise the plugin estimates cloud cover by comparing the measured solar radiation with what a clear sky would give for the sun's current position. With `"simple"` the result is clear or overcast. With `"detailed"` it is clear, few clouds, broken clouds or overcast. At night, or when the station's location isn't known, it reports clear.
+
+**Battery Charging State**  
+WeatherFlow stations don't report whether the battery is charging, so the plugin works it out from the battery voltage trend. Voltage changes of 10 mV or less are treated as noise, and a new Charging State is only reported once it has held for 15 minutes. The first known state after a restart is reported straight away.
 
 ## Advanced Configuration
 
@@ -212,11 +227,14 @@ Detail level of the condition category. Not available for WeatherUnderground. De
 **extraHumidity**  (compatibility `"eve"` or `"both"`)  
 Separate humidity from the weather accessory to an own accessory if set to `true`. Default is `false`.
 
+**extraLightLevel**  (Tempest, compatibility `"eve"`)  
+Separate light level from the weather accessory to an own accessory if set to `true`. Default is `false`. In compatibility `"home"` and `"both"`, light level already has its own sensor.
+
 **forecast**  
 List of forecast days with 0 for today, 1 for tomorrow, 2 for in 2 days etc. Default are none `[]`. Maximum depends on the chosen [weather service](#choose-your-weather-service).
 
 **hidden**  
-List of observation and forecast values that should not be displayed. Possible options are `["AirPressure", "CloudCover", "Condition", "ConditionCategory", "DewPoint", "ForecastDay", "Humidity", "ObservationStation", "ObservationTime", "Ozone", "Rain1h", "RainBool", "RainChance", "RainDay", "SnowBool", "SolarRadiation", "TemperatureMin", "UVIndex", "Visibility", "WindDirection", "WindSpeed", "WindSpeedMax"]`. Don't forget the square brackets.
+List of observation and forecast values that should not be displayed. Possible options are `["AirPressure", "CloudCover", "Condition", "ConditionCategory", "DewPoint", "ForecastDay", "Humidity", "ObservationStation", "ObservationTime", "Ozone", "Rain1h", "RainBool", "RainChance", "RainDay", "SnowBool", "SolarRadiation", "TemperatureMin", "UVIndex", "Visibility", "WeatherTrend", "WindDirection", "WindSpeed", "WindSpeedMax"]`. Don't forget the square brackets.
 
 **interval**  
 Update interval in minutes. The default is `4` minutes because the rate for free API keys is limited.
@@ -312,6 +330,33 @@ Each stations must have a unique displayName. If you don't set one, the plugin w
                 "key": "YOUR_API_KEY",
                 "forecast": [1],
                 "locationGeo": [34.0536909,-118.2427666]
+            }
+        ]
+    }
+]
+```
+
+### Multiple Tempest stations
+
+You can run several Tempest (or Air/Sky) stations at the same time, for example a main station and a backup. Add one entry per station to the **stations** array and set **tempestStation** to that station's serial number. All entries share one listener on the local network, and each entry only shows data from its own station. Give each entry its own name so that the log lines can be told apart.
+
+If you run a single entry without a serial number and the plugin hears more than one station, it logs a warning, because their readings would be mixed together.
+
+```json
+"platforms": [
+    {
+        "platform": "WeatherPlus",
+        "units": "si",
+        "stations": [
+            {
+                "nameNow": "Now",
+                "service": "tempest",
+                "tempestStation": "ST-00012345"
+            },
+            {
+                "nameNow": "Backup",
+                "service": "tempest",
+                "tempestStation": "ST-00067890"
             }
         ]
     }

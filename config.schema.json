@@ -223,6 +223,10 @@
             "type": "boolean",
             "default": false
           },
+          "extraLightLevel": {
+            "type": "boolean",
+            "default": false
+          },
           "hidden": {
             "type": "array",
             "items": {
@@ -271,6 +275,10 @@
           },
           "thresholdWindSpeed": {
             "type": "integer"
+          },
+          "tempestStation": {
+            "type": "string",
+            "pattern": "^(AR|SK|ST|ar|sk|st)-[0-9]{8}( *, *(AR|SK|ST|ar|sk|st)-[0-9]{8})*$"
           }
         }
       }
@@ -495,12 +503,29 @@
                   }
                 },
                 {
+                  "key": "stations[].extraLightLevel",
+                  "title": "Separate light level",
+                  "description": "Separate light level from the weather accessory to an own accessory.",
+                  "condition": {
+                    "functionBody": "return model.stations[arrayIndices[0]].service === 'tempest' && (model.stations[arrayIndices[0]].compatibility === 'eve' || model.stations[arrayIndices[0]].compatibility === 'both')"
+                  }
+                },
+                {
                   "type": "help",
                   "helpvalue": "<h6>History Storage Configuration</h6><p class='help-block'>By default the history is persisted on the filesystem. You can set your own option using this parameter. In order to change the location of the <a href='https://github.com/simont77/fakegato-history#file-system' target='_blank'>persisted file</a> or to use <a href='https://github.com/simont77/fakegato-history#google-drive' target='_blank'>GoogleDrive</a>. Do not modify the parameter for the fakegato internal timer.</p>"
                 },
                 {
                   "key": "stations[].fakegatoParameters",
                   "notitle": true
+                },
+                {
+                  "key": "stations[].tempestStation",
+                  "title": "Station Serial Number(s)",
+                  "description": "(optional) Provide the station serial number to only report data on a select weather station. For Air/Sky, enter both (eg. AR-XXXXXXXX,SK-XXXXXXXX)",
+                  "validationMessage": "Enter one serial number, or a comma-separated AR/SK pair. Each must start with AR-, SK- or ST- followed by 8 characters (eg. ST-00012345 or AR-00012345,SK-00012345).",
+                  "condition": {
+                    "functionBody": "return model.stations[arrayIndices[0]].service === 'tempest'"
+                  }
                 }
               ]
             },

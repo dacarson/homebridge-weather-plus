@@ -1,7 +1,7 @@
 {
   "name": "homebridge-weather-plus",
   "displayName": "Weather Plus",
-  "version": "3.5.0-beta.2",
+  "version": "3.6.0",
   "description": "A comprehensive weather plugin for homekit with current observations, forecasts and history.",
   "license": "MIT",
   "keywords": [
@@ -43,6 +43,9 @@
     "tempest weather station",
     "weatherflow weather station"
   ],
+  "scripts": {
+    "test": "node --test test/chargingState.test.js && node test/weatherflow-udp-recovery.test.js"
+  },
   "engines": {
     "node": ">=10.0.0 || ^20.15.1",
     "homebridge": ">=1.0.0 || ^2.0.0"
@@ -125,9 +128,6 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/naofireblade/homebridge-weather-plus.git"
-  },
-  "scripts": {
-    "test": "node test/weatherflow-udp-recovery.test.js"
   },
   "dependencies": {
     "fakegato-history": "^0.6.7",

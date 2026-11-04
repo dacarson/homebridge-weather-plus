@@ -9,6 +9,7 @@
  */
 
 const converter = require('../util/converter'),
+	chargingState = require('../util/chargingState'),
 	moment = require('moment-timezone'),
 	dgram = require("dgram"),
 	performance = require("perf_hooks").performance,
@@ -54,10 +55,51 @@ function isValidUdpIdentifier(value)
 	return typeof value === "string" && /^[A-Za-z0-9._:-]{1,64}$/.test(value);
 }
 
+function assignUdpFields(target, dependencies)
+{
+	target.createSocket = dependencies.createSocket || ((options) => dgram.createSocket(options));
+	target.now = dependencies.now || (() => performance.now());
+	target.setInterval = dependencies.setInterval || setInterval;
+	target.clearInterval = dependencies.clearInterval || clearInterval;
+	target.setTimeout = dependencies.setTimeout || setTimeout;
+	target.clearTimeout = dependencies.clearTimeout || clearTimeout;
+	target.server = null;
+	target.disposed = false;
+	target.lastObservationAt = null;
+	target.observationStaleTimeout = UDP_MIN_STALE_TIMEOUT;
+	target.udpWatchdogTimer = null;
+	target.udpRestartTimer = null;
+	target.udpRestartPending = false;
+	target.udpClosingServer = null;
+	target.udpFailureCount = 0;
+	target.udpGeneration = 0;
+	target.udpRestartCount = 0;
+	target.udpRecovery = null;
+	target.udpPacketWarnings = new Set();
+}
+
+// All Tempest instances listen for the same UDP broadcasts on port 50222.
+// Binding a separate socket per instance makes the OS deliver each datagram to
+// only one of them, so a station locked to a specific serial can silently miss
+// all of its broadcasts. Production instances share one recovered listener.
+// A caller that injects createSocket (the recovery tests) gets a private listener.
+let sharedListener = null;
+let sharedSubscribers = [];
+
 class TempestAPI
 {
-	constructor (apiKey, locationId, conditionDetail, log, cacheDirectory, dependencies = {})
+	constructor (apiKey, locationId, conditionDetail, tempestStation, log, cacheDirectory, name, locationGeo, dependencies = {})
 	{
+		// Upstream recovery tests call (apiKey, locationId, conditionDetail, log, cacheDirectory, dependencies).
+		if (typeof tempestStation === 'function') {
+			dependencies = (cacheDirectory && typeof cacheDirectory === 'object') ? cacheDirectory : {};
+			cacheDirectory = log;
+			log = tempestStation;
+			tempestStation = undefined;
+			name = undefined;
+			locationGeo = undefined;
+		}
+
 		this.attribution = 'Weatherflow Tempest';
 		this.reportCharacteristics = [
 			'AirPressure', // Station Pressure
@@ -87,7 +129,8 @@ class TempestAPI
 			// @see https://weatherflow.github.io/Tempest/api/derived-metric-formulas.html
 			'DewPoint', // Calculated from Humidity & Temperature
 			'TemperatureApparent', // Calculated from Humidity, Temperature & Windspeed
-			'TemperatureWetBulb' // Calculated from Humidity & Temperature
+			'TemperatureWetBulb', // Calculated from Humidity & Temperature
+			'WeatherTrend' // Eve-only: computed from pressure delta + wind speed (m/s native)
 		];
 		
 		this.forecastCharacteristics = [
@@ -111,13 +154,57 @@ class TempestAPI
 			}
 	
 		this.conditionDetail = conditionDetail;
-		this.log = log;
+		// Prefix every log line with the station name so that multiple Tempest
+		// instances (e.g. "Now" and "Backup") can be told apart in the log.
+		if (name && name.length > 0) {
+			let prefix = "[" + name + "]";
+			let wrap = (fn) => (...args) => fn(prefix, ...args);
+			this.log = wrap(log);
+			['debug', 'info', 'warn', 'error'].forEach((level) => {
+				if (typeof log[level] === 'function') this.log[level] = wrap(log[level].bind(log));
+			});
+		} else {
+			this.log = log;
+		}
 		this.apiKey = apiKey;
 		this.locationId = locationId;
+		this.latitude = (locationGeo && locationGeo.length === 2) ? locationGeo[0] : null;
+		this.longitude = (locationGeo && locationGeo.length === 2) ? locationGeo[1] : null;
+		this.tempestStationLock = [];
+		if (tempestStation && tempestStation.length > 0) {
+			let stations = tempestStation.split(',');
+			stations.forEach((station) => {
+				station = station.trim().toUpperCase();
+				if (this.validateSerialNumber(station)) {
+					this.tempestStationLock.push(station);
+					this.log.debug("Monitoring station: " + station);
+				} else {
+					this.log.warn("Ignoring invalid station serial number: " + station);
+				}
+			});
+			if (this.tempestStationLock.length > 0) {
+				this.log("Only reporting data for station serial number(s): " + this.tempestStationLock.join(', '));
+			}
+		}
 		
-		this.storage = dependencies.storage || require('node-persist');
-		// The saved data is only valid for up to 24hrs (TTL)
-		this.storage.initSync({dir:cacheDirectory, forgiveParseErrors: true, ttl: true});
+		// Give each station its own node-persist instance, located OUTSIDE the
+		// shared Homebridge persist directory, so multiple Tempest instances
+		// don't clobber each other's stored readings. HAP-NodeJS uses
+		// node-persist on the shared persist dir and reads every entry of it on
+		// init, so a sub-directory placed inside it would throw EISDIR and break
+		// all of Homebridge. Storing under a sibling "weatherflow-plus" folder
+		// keeps our per-station sub-directories clear of that scan.
+		// Injected storage (recovery tests) is used as-is.
+		if (dependencies.storage) {
+			this.storage = dependencies.storage;
+			this.storage.initSync({dir: cacheDirectory, forgiveParseErrors: true, ttl: true});
+		} else {
+			let namespace = this.tempestStationLock.length > 0 ? this.tempestStationLock.join('-') : 'default';
+			let storageDir = require('path').join(cacheDirectory, '..', 'weatherflow-plus', namespace);
+			this.storage = require('node-persist').create();
+			// The saved data is only valid for up to 24hrs (TTL)
+			this.storage.initSync({dir:storageDir, forgiveParseErrors: true, ttl: true});
+		}
 		this.rainAccumulation = [];
 		// Fill the array with zeros so that when we sum them up, it doesn't get NaN
 		for (var i = 0; i < 60; i++) this.rainAccumulation[i] = 0.0;
@@ -155,6 +242,16 @@ class TempestAPI
 		this.currentReport.LightLevel = 0;
 		this.currentReport.TemperatureWetBulb = 0;
 		this.currentReport.StatusFault = 0;
+		this.currentReport.WeatherTrend = 0;
+		this.pressureHistory = [];
+
+		// Charging State is inferred from the battery voltage trend. Track each
+		// sensor separately and only report a change once it has held for a
+		// while (see util/chargingState.js).
+		this.airVoltageTrend = new chargingState.BatteryVoltageTrend();
+		this.skyVoltageTrend = new chargingState.BatteryVoltageTrend(); // Sky or Tempest
+		this.chargingStateHold = new chargingState.ChargingStateHold(
+			chargingState.CHARGING_STATE_HOLD_MS, (msg) => this.log.debug(msg));
 
 		// Non-exposed Weather report characteristics
 		// Sky or Tempest station (unlikely to have both)
@@ -176,30 +273,31 @@ class TempestAPI
 		// we can remove duplicates
 		this.prevMsg = "";
 
-		this.createSocket = dependencies.createSocket || ((options) => dgram.createSocket(options));
-		this.now = dependencies.now || (() => performance.now());
-		this.setInterval = dependencies.setInterval || setInterval;
-		this.clearInterval = dependencies.clearInterval || clearInterval;
-		this.setTimeout = dependencies.setTimeout || setTimeout;
-		this.clearTimeout = dependencies.clearTimeout || clearTimeout;
-
-		this.server = null;
-		this.disposed = false;
-		this.lastObservationAt = null;
-		this.observationStaleTimeout = UDP_MIN_STALE_TIMEOUT;
-		this.udpWatchdogTimer = null;
-		this.udpRestartTimer = null;
-		this.udpRestartPending = false;
-		this.udpClosingServer = null;
-		this.udpFailureCount = 0;
-		this.udpGeneration = 0;
-		this.udpRestartCount = 0;
-		this.udpRecovery = null;
-		this.udpPacketWarnings = new Set();
-
-		this.createUdpServer();
+		// When no serial number is configured, track which stations we hear from
+		// so we can warn the user if more than one station is broadcasting (their
+		// data would otherwise be silently mixed together). Maps serial -> last
+		// seen time so stations that go away (e.g. a swapped device) are forgotten.
+		this.seenStations = {};
+	
+		// A private listener keeps the recovery tests isolated. Production stations
+		// share one socket so every serial filter sees every broadcast.
+		if (typeof dependencies.createSocket === 'function') {
+			this._udpShared = false;
+			assignUdpFields(this, dependencies);
+			this.createUdpServer();
+		} else if (!sharedListener) {
+			this._udpShared = true;
+			sharedSubscribers.push(this);
+			sharedListener = this;
+			assignUdpFields(this, dependencies);
+			this.udpHandlers = sharedSubscribers;
+			this.createUdpServer();
+		} else {
+			this._udpShared = true;
+			sharedSubscribers.push(this);
+		}
 	}
-
+ 
 	createUdpServer()
 	{
 		if (this.disposed) return;
@@ -266,7 +364,14 @@ class TempestAPI
 			return;
 		}
 
-		this.parseMessage(decoded.message);
+		const subscribers = this.udpHandlers;
+		if (subscribers) {
+			subscribers.forEach((subscriber) => {
+				if (!subscriber.disposed) subscriber.parseMessage(decoded.message);
+			});
+		} else {
+			this.parseMessage(decoded.message);
+		}
 	}
 
 	decodeUdpDatagram(msg, generation = this.udpGeneration)
@@ -469,6 +574,48 @@ class TempestAPI
 	dispose()
 	{
 		if (this.disposed) return;
+
+		// Hand the shared socket to another station before this one goes away.
+		if (this._udpShared && sharedListener === this && sharedSubscribers.length > 1) {
+			this.disposed = true;
+			const index = sharedSubscribers.indexOf(this);
+			if (index >= 0) sharedSubscribers.splice(index, 1);
+			this.stopUdpWatchdog();
+			if (this.udpRestartTimer !== null) {
+				this.clearTimeout(this.udpRestartTimer);
+				this.udpRestartTimer = null;
+			}
+			this.udpRestartPending = false;
+			const server = this.server;
+			this.server = null;
+			if (server && server !== this.udpClosingServer) {
+				try {
+					server.close();
+				} catch (err) {
+					this.log.debug(`Unable to close WeatherFlow UDP server during shutdown: ${err.message}`);
+				}
+			}
+			const next = sharedSubscribers[0];
+			sharedListener = next;
+			next._udpShared = true;
+			assignUdpFields(next, {});
+			next.udpHandlers = sharedSubscribers;
+			next.createUdpServer();
+			return;
+		}
+
+		if (this._udpShared && sharedListener !== this) {
+			this.disposed = true;
+			const index = sharedSubscribers.indexOf(this);
+			if (index >= 0) sharedSubscribers.splice(index, 1);
+			return;
+		}
+
+		if (sharedListener === this) {
+			sharedListener = null;
+			sharedSubscribers.length = 0;
+		}
+
 		this.disposed = true;
 		this.stopUdpWatchdog();
 
@@ -542,6 +689,23 @@ class TempestAPI
 		}
 	}
 
+	validateSerialNumber(serialNumber) {
+		if (!serialNumber) {
+			this.log.debug(`No WeatherFlow station serial number provided`);
+			return false;
+		}
+		if (!['AR-', 'SK-', 'ST-'].includes(serialNumber.substring(0, 3))) {
+			this.log.debug(`Serial number has wrong prefix ${serialNumber}`);
+			return false;
+		}
+		if (!/^[0-9]{8}$/.test(serialNumber.substring(3))) {
+			this.log.debug(`Serial number suffix must be 8 digits ${serialNumber}`);
+			return false;
+		}
+    
+		return true;
+	}
+
 	load() {
 		this.log("Restoring last readings");
 		this.reportCharacteristics.forEach((name) => {
@@ -552,7 +716,16 @@ class TempestAPI
 					this.currentReport[name] = result;
 					this.log.debug(`Loaded ${name} with ${result}`);
 			}
-		})
+		});
+		
+		// Restore the sensor serial numbers. These aren't HomeKit characteristics
+		// so they live outside reportCharacteristics, but they are used to decide
+		// whether we have ever seen the station. Restoring them avoids a spurious
+		// "data incomplete" warning on restart when we already have last readings.
+		['SkySerialNumber', 'AirSerialNumber'].forEach((name) => {
+			let result = this.storage.getItemSync(name);
+			if (result) this.currentReport[name] = result;
+		});
 		
 		// Reload last hour of rainfall
 		let lastRainAccumulationMinute = this.storage.getItemSync('rainAccumulationMinute');
@@ -574,6 +747,11 @@ class TempestAPI
 			this.storage.setItemSync(name, currentReport[name]);
 		})
 		
+		// Persist the sensor serial numbers so a restart is recognised as having
+		// seen the station (see load() for why these live outside reportCharacteristics).
+		this.storage.setItemSync('SkySerialNumber', currentReport.SkySerialNumber);
+		this.storage.setItemSync('AirSerialNumber', currentReport.AirSerialNumber);
+		
 		// Store last hour rain fall
 		let hourTTL = 1000 * 60 * 60; // Rainfall data is only valid for an hour.
 		this.storage.setItemSync('rainAccumulationMinute', this.rainAccumulationMinute, {ttl: hourTTL});
@@ -584,6 +762,18 @@ class TempestAPI
 	update(forecastDays, callback)
 	{
 		this.log.debug("Updating weather from Weatherflow Tempest");
+		
+		// The current weather data could be requested before the plugin
+		// has received initial data from the sensors. Updating with empty
+		// data causes error messages from HomeBridge and odd values in
+		// the logs.
+		// If we still have default values for serial numbers, then return
+		// error, and thus don't populate data yet.
+		if (this.currentReport.SkySerialNumber === "SK-" && this.currentReport.AirSerialNumber === "AR-") {
+			this.log.warn("Weatherflow data incomplete, ignoring update request");
+			callback(true, null);
+			return;
+		}
 
 		let weather = {};
 		weather.forecasts = [];
@@ -595,6 +785,9 @@ class TempestAPI
 								 {
 				if (!error) {
 					try {
+						this.log.debug("Forecast API top-level keys: " + Object.keys(result).join(', '));
+						if (result.latitude !== undefined) this.latitude = result.latitude;
+						if (result.longitude !== undefined) this.longitude = result.longitude;
 						weather.forecasts = this.parseForecasts(result["current_conditions"]["time"], result["forecast"]["daily"], result["timezone"]);
 					} catch (e) {
 						this.log.error("Error parsing weather Forecast");
@@ -620,30 +813,6 @@ class TempestAPI
 			let that = this;
 			weather.report = that.currentReport;
 			callback(null, weather);
-		}
-	}
-
-	// Map Tempest precipitation values to Eve Condition Categories
-	getConditionCategory(precipitationType, detail = false)
-	{
-	// Tempest: 0 = none, 1 = rain, 2 = hail, 3 = rain + hail (experimental)
-	
-	// Eve (simple): 0 = clear; 3 = snow; 2 = rain; 1 = overcast
-	// Eve (detailed): 0 = clear; 1 = Few clouds;2 = Broken clouds;3 =  Overcast;
-	//   4 = Fog; 5 = Drizzle; 6 = Rain; 7 = Hail; 8 = Snow; 9 = Severe weather
-
-		if (precipitationType == 1) {
-			// Rain
-			return detail ? 6 : 2;
-		} else if (precipitationType == 2) {
-			// Hail
-			return detail ? 7 : 2;
-		} else if (precipitationType == 3){
-			// Rain + Hail (return as hail)
-			return detail ? 7 : 2;
-		} else {
-			// 0 = Clear
-			return 0;
 		}
 	}
 
@@ -686,11 +855,75 @@ class TempestAPI
 	}
 	
 
+	// Apply the hold to a sensor's charging trend and update the report.
+	// 'charging' is undefined until the voltage trend is known, in which case
+	// the current report value is left alone.
+	reportChargingState(charging, epochSeconds)
+	{
+		const state = this.chargingStateHold.update(charging, epochSeconds * 1000);
+		if (state !== undefined) {
+			this.currentReport.BatteryIsCharging = state;
+		}
+	}
+
+	// When no station serial number is configured, every broadcast is merged
+	// into a single report. If more than one station is on the network their
+	// data clobbers each other, so detect that and warn the user to configure a
+	// serial number. A valid single station is either one Tempest (ST-) or one
+	// Sky (SK-) paired with one Air (AR-). Stations that stop broadcasting are
+	// expired so swapping a device for a new serial does not trigger a warning.
+	checkForMultipleStations(serialNumber)
+	{
+		// Only relevant when the user hasn't locked to specific serial number(s).
+		if (this.tempestStationLock.length > 0) return;
+		if (!this.validateSerialNumber(serialNumber)) return;
+
+		let now = Date.now();
+		const EXPIRY_MS = 5 * 60 * 1000;
+		this.seenStations[serialNumber.toUpperCase()] = now;
+		Object.keys(this.seenStations).forEach((sn) => {
+			if (now - this.seenStations[sn] > EXPIRY_MS) delete this.seenStations[sn];
+		});
+
+		let active = Object.keys(this.seenStations).sort();
+		let tempest = active.filter((sn) => sn.startsWith('ST-'));
+		let sky = active.filter((sn) => sn.startsWith('SK-'));
+		let air = active.filter((sn) => sn.startsWith('AR-'));
+
+		// Invalid if more than one of any type, or a Tempest mixed with a Sky/Air.
+		let multiple = tempest.length > 1 || sky.length > 1 || air.length > 1 ||
+			(tempest.length > 0 && (sky.length > 0 || air.length > 0));
+
+		let signature = active.join(',');
+		if (multiple) {
+			// Only warn when the set of stations changes to avoid log spam.
+			if (this.multiStationSignature !== signature) {
+				this.multiStationSignature = signature;
+				this.log.warn("Detected multiple WeatherFlow stations on the network (" + active.join(', ') +
+					"). Their data is being mixed together. Set the station serial number in the plugin " +
+					"configuration (an advanced setting) to choose which station to report.");
+			}
+		} else {
+			this.multiStationSignature = undefined;
+		}
+	}
+
 	// API for UDP data: https://weatherflow.github.io/Tempest/api/udp.html
 	parseMessage(message)
 	{
 		let that = this;
+
+		this.checkForMultipleStations(message.serial_number);
 		
+		// Filter out messages for this station if there are filters
+		if (this.tempestStationLock.length > 0) {
+			this.log.debug("Applying SN filter: " + this.tempestStationLock.toString());
+			if (!message.serial_number || !this.tempestStationLock.includes(message.serial_number.toUpperCase())) {
+				this.log.debug("Ignoring data for: " + message.serial_number + " " + JSON.stringify(message));
+				return;
+			}
+		}
+    
 		if (message.type == 'device_status') {
 			that.currentReport.ObservationStation = message.serial_number;
 			that.currentReport.ObservationTime = moment.unix(message.timestamp).format('HH:mm:ss');
@@ -781,7 +1014,7 @@ class TempestAPI
 		if (message.type == 'evt_precip') {
 			that.currentReport.ObservationStation = message.serial_number;
 			that.currentReport.ObservationTime = moment.unix(message.evt[0]).format('HH:mm:ss');
-			that.currentReport.ConditionCategory = this.getConditionCategory(1, this.conditionDetail); // It has started to rain
+			that.currentReport.ConditionCategory = converter.computeConditionCategory(1, 0, this.latitude, this.longitude, this.conditionDetail); // It has started to rain
 			that.currentReport.RainBool = true;
 		}
 		
@@ -798,6 +1031,8 @@ class TempestAPI
 			that.currentReport.AirFirmware = message.firmware_revision;
 			that.currentReport.ObservationTime = moment.unix(message.obs[0][0]).format('HH:mm:ss');
 			that.currentReport.AirPressure = message.obs[0][1];
+			const airPressureDelta = converter.trackPressureDelta(that.pressureHistory, that.currentReport.AirPressure);
+			that.currentReport.WeatherTrend = converter.computeEveTrend(airPressureDelta, that.currentReport.WindSpeed);
 			that.currentReport.Temperature = message.obs[0][2];
 			that.currentReport.Humidity = message.obs[0][3];
 			
@@ -821,16 +1056,12 @@ class TempestAPI
 			that.currentReport.LightningAvgDistance = message.obs[0][5];
 			
 			// Report battery status.
-			var previousLevel = that.currentReport.AirSensorBatteryLevel;
+			var airCharging = this.airVoltageTrend.update(message.obs[0][6]);
 			that.currentReport.AirSensorBatteryLevel = this.getBatteryPercent(message.obs[0][6]);
 			// If the AIR sensor has the lowest battery level, then report it as the Station battery level
 			if (that.currentReport.AirSensorBatteryLevel < that.currentReport.SkySensorBatteryLevel) {
 				that.currentReport.BatteryLevel = that.currentReport.AirSensorBatteryLevel;
-				// It could have a solar panel on it, so check to see if it is going up (charging)
-				that.currentReport.BatteryIsCharging = false;
-				if (that.currentReport.BatteryLevel > previousLevel) {
-					that.currentReport.BatteryIsCharging = true;
-				}
+				this.reportChargingState(airCharging, message.obs[0][0]);
 			}
 		}
 
@@ -853,16 +1084,12 @@ class TempestAPI
 			that.currentReport.WindSpeedMax = message.obs[0][6];
 			
 			// Report battery status.
-			var previousLevel = that.currentReport.SkySensorBatteryLevel;
+			var skyCharging = this.skyVoltageTrend.update(message.obs[0][8]);
 			that.currentReport.SkySensorBatteryLevel = this.getBatteryPercent(message.obs[0][8]);
 			// If the SKY sensor has the lowest battery level, then report it as the Station battery level
 			if (that.currentReport.SkySensorBatteryLevel < that.currentReport.AirSensorBatteryLevel) {
 				that.currentReport.BatteryLevel = that.currentReport.SkySensorBatteryLevel;
-				// It could have a solar panel on it, so check to see if it is going up (charging)
-				that.currentReport.BatteryIsCharging = false;
-				if (that.currentReport.BatteryLevel > previousLevel) {
-					that.currentReport.BatteryIsCharging = true;
-				}
+				this.reportChargingState(skyCharging, message.obs[0][0]);
 			}
 			
 			that.currentReport.SolarRadiation = message.obs[0][10];
@@ -875,7 +1102,7 @@ class TempestAPI
 				that.currentReport.RainDay = parseFloat(message.obs[0][3]);
 				that.currentReport.TemperatureMin = that.currentReport.Temperature;
 			}
-			that.currentReport.ConditionCategory = this.getConditionCategory(message.obs[0][12], this.conditionDetail);
+			that.currentReport.ConditionCategory = converter.computeConditionCategory(message.obs[0][12], that.currentReport.SolarRadiation, this.latitude, this.longitude, this.conditionDetail);
 		}
 
        if (message.type == 'obs_st') {
@@ -893,6 +1120,8 @@ class TempestAPI
             //that.currentReport.WindDirection = converter.getWindDirection(message.obs[0][4]);
             
             that.currentReport.AirPressure = message.obs[0][6];
+            const stPressureDelta = converter.trackPressureDelta(that.pressureHistory, that.currentReport.AirPressure);
+            that.currentReport.WeatherTrend = converter.computeEveTrend(stPressureDelta, that.currentReport.WindSpeed);
             that.currentReport.Temperature = message.obs[0][7];
             that.currentReport.Humidity = message.obs[0][8];
 	
@@ -928,16 +1157,12 @@ class TempestAPI
                 that.currentReport.RainDay = parseFloat(message.obs[0][12]);
                 that.currentReport.TemperatureMin = that.currentReport.Temperature;
             }
-            that.currentReport.ConditionCategory = this.getConditionCategory(message.obs[0][13], this.conditionDetail);
+            that.currentReport.ConditionCategory = converter.computeConditionCategory(message.obs[0][13], that.currentReport.SolarRadiation, this.latitude, this.longitude, this.conditionDetail);
             that.currentReport.LightningAvgDistance = message.obs[0][14];
             that.currentReport.LightningStrikes = message.obs[0][15];
             that.currentReport.SkySensorBatteryLevel = this.getTempestBatteryPercent(message.obs[0][16]);
-            var previousLevel = that.currentReport.BatteryLevel;
-			that.currentReport.BatteryIsCharging = false;
 			that.currentReport.BatteryLevel = that.currentReport.SkySensorBatteryLevel;
-			if (that.currentReport.BatteryLevel > previousLevel) {
-				that.currentReport.BatteryIsCharging = true;
-			}
+			this.reportChargingState(this.skyVoltageTrend.update(message.obs[0][16]), message.obs[0][0]);
             
         }
 	}
@@ -1080,3 +1305,4 @@ class TempestAPI
 module.exports = {
 	TempestAPI: TempestAPI
 };
+

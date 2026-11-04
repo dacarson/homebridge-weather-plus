@@ -198,10 +198,12 @@ class WeewxAPI
 			'WindSpeedMax',
 			'AirPressure',
 			'Rain1h',
-			'RainDay'
+			'RainDay',
+			'WeatherTrend' // Eve-only: computed from pressure delta; wind bit not set (WeeWX wind units vary by config)
 		];
 
 		this.log = log;
+		this.pressureHistory = [];
 
 		//this.location = location;
 		this.apiKey = apiKey;
@@ -289,6 +291,10 @@ class WeewxAPI
 			report.Temperature = isNaN(values.temp) ? 0 : values.temp;
 			report.DewPoint = isNaN(values.dewpt) ? 0 : values.dewpt;
 			report.AirPressure = isNaN(values.pressure) ? 0 : values.pressure;
+			// Wind bit is not set for WeeWX: wind units vary by WeeWX unit system config
+			// (mph, km/h, or m/s) and normalising here would be fragile.
+			const pressureDelta = converter.trackPressureDelta(this.pressureHistory, report.AirPressure);
+			report.WeatherTrend = converter.computeEveTrend(pressureDelta, null);
 			report.TemperatureApparent = isNaN(values.apptemp) ? 0 : values.apptemp;
       		report.WindSpeed = isNaN(values.windSpeed) ? 0 : values.windSpeed;
 			report.WindSpeedMax = isNaN(values.windGust) ? 0 : values.windGust;

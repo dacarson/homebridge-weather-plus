@@ -91,7 +91,7 @@ function WeatherPlusPlatform(_log, _config)
 				break;
 			case "tempest":
 				this.log.info("Adding station with weather service TempestAPI named '" + config.nameNow + "'");
-				this.stations.push(new tempest(config.key, config.locationId, config.conditionDetail, this.log, HomebridgeAPI.user.persistPath()));
+				this.stations.push(new tempest(config.key, config.locationId, config.conditionDetail, config.tempestStation, this.log, HomebridgeAPI.user.persistPath(), config.nameNow, config.locationGeo));
 				this.interval = 1;  // Tempest broadcasts new data every minute, forecasts are limited to once per hour
 				break;
 			default:
@@ -256,6 +256,10 @@ WeatherPlusPlatform.prototype = {
 		}
 		this.log.debug(station.hidden);
 		station.serial = station.service + " - " + (station.locationId || '') + (station.locationGeo || '') + (station.locationCity || '');
+		if (station.tempestStation) 
+		{
+			station.serial += " (" + station.tempestStation + ")";
+		}
 		return true;
 	},
 
@@ -405,6 +409,10 @@ WeatherPlusPlatform.prototype = {
 				{
 					accessory.HumidityService.setCharacteristic(Characteristic.CurrentRelativeHumidity, convertedValue);
 				}
+				else if (name === "LightLevel")
+				{
+					accessory.LightLevelService.setCharacteristic(Characteristic.CurrentAmbientLightLevel, value);
+				}
 				else if (["RainBool", "SnowBool"].includes(name))
 				{
 					accessory[name + "Service"].setCharacteristic(Characteristic.OccupancyDetected, convertedValue);
@@ -518,6 +526,12 @@ WeatherPlusPlatform.prototype = {
 				} else {
 					temperatureService.setCharacteristic(Characteristic.StatusFault, Characteristic.StatusFault.NO_FAULT);
 				}
+			}
+			// Observation Time has no NOTIFY permission, so don't push updates for it.
+			// Just keep the newest value; the accessory's onGet handler returns it.
+			else if (name === "ObservationTime")
+			{
+				accessory.lastObservationTime = convertedValue;
 			}
 			// Set everything else as a custom characteristic on the main service.
 			// Matches the accessory-construction guard in
